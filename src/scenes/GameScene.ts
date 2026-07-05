@@ -18,11 +18,48 @@ import {
   successProbability,
   unassignWorker,
 } from '../core/game';
-import type { GameState, ResolutionResult, Spot, Worker } from '../core/types';
+import { clearSave, hasSave, readSave, writeSave } from '../core/save';
+import { audio } from '../audio/sfx';
+import type { DifficultyId, GameState, ResolutionResult, Spot, Worker } from '../core/types';
 import { getBuilding } from '../data/buildings';
+import { DEFAULT_DIFFICULTY, difficulties, difficultyOrder, getDifficulty } from '../data/difficulties';
 import { traits, traitNames } from '../data/traits';
 
 const FONT = '"Noto Sans JP", sans-serif';
+
+/** 季節ごとの盤面(地面・広場)配色。温かみのあるボード盤面を演出する。 */
+const GROUND_PALETTE: Record<string, { g0: number; g1: number; plaza: number; frame: number }> = {
+  spring: { g0: 0x33502f, g1: 0x274023, plaza: 0x4a6a4e, frame: 0x6b5836 },
+  summer: { g0: 0x3a5a30, g1: 0x2c4726, plaza: 0x5a7a48, frame: 0x7a6432 },
+  autumn: { g0: 0x53422a, g1: 0x3e3120, plaza: 0x6a5636, frame: 0x7c5e30 },
+  winter: { g0: 0x364550, g1: 0x28333c, plaza: 0x4c5e6a, frame: 0x5f6f7c },
+};
+
+/** 季節のアクセント色(スポットタイル上端の帯・小物に使う)。 */
+const SEASON_ACCENT: Record<string, number> = {
+  spring: 0x7fb069,
+  summer: 0xe0b24e,
+  autumn: 0xd0763c,
+  winter: 0x8fb4d0,
+};
+
+/** ダイスの目のピップ配置(グリッド単位 -1/0/1)。 */
+const PIP_LAYOUT: Record<number, Array<[number, number]>> = {
+  1: [[0, 0]],
+  2: [[-1, -1], [1, 1]],
+  3: [[-1, -1], [0, 0], [1, 1]],
+  4: [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+  5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
+  6: [[-1, -1], [-1, 0], [-1, 1], [1, -1], [1, 0], [1, 1]],
+};
+
+/** 結果段階ごとのダイス面色・エフェクト色。 */
+const OUTCOME_STYLE: Record<string, { face: number; hex: string; num: number }> = {
+  criticalSuccess: { face: 0xffe6a0, hex: '#ffd97a', num: 0xffd97a },
+  success: { face: 0xf6ecd6, hex: '#9fe3a0', num: 0x9fe3a0 },
+  failure: { face: 0xcfcabf, hex: '#b9b9b9', num: 0xb9b9b9 },
+  criticalFailure: { face: 0xe8b0a4, hex: '#ff7a7a', num: 0xff7a7a },
+};
 
 // HUDパネル(右側 x≈940〜)と重ならない範囲に収める
 const SPOT_POSITIONS: Record<string, [number, number]> = {
@@ -45,13 +82,21 @@ export class GameScene extends Phaser.Scene {
   private state: GameState = createGame();
   private hud!: HTMLElement;
   private selectedWorkerId: string | undefined;
+  private selectedDifficultyId: DifficultyId = DEFAULT_DIFFICULTY;
   private pendingWorkshop = false;
   private hoverInfo = '';
   private spotViews: SpotView[] = [];
   private workerViews: Phaser.GameObjects.Container[] = [];
   private effectLayer!: Phaser.GameObjects.Container;
+  /** 季節で色替えする地面グラフィック。season 変化時のみ再描画する。 */
+  private boardGround!: Phaser.GameObjects.Graphics;
+  private paintedSeason = '';
   private skipResolution = false;
   private resolving = false;
+  /** HUD再構築の影響を受けない常設ミュートボタン(#appへ直接append) */
+  private muteBtn?: HTMLButtonElement;
+  /** result フェーズで勝敗ジングルを1度だけ鳴らすためのフラグ */
+  private resultAnnounced = false;
 
   constructor() {
     super('GameScene');
@@ -67,35 +112,219 @@ export class GameScene extends Phaser.Scene {
       this.pendingWorkshop = false;
       this.render();
     });
-    this.state = beginPlacement(startGame(this.state));
+    // タイトル画面(難易度選択)から開始する。state.phase は 'title'。
+    this.createMuteButton();
     this.drawBoard();
     this.render();
   }
 
+  /**
+   * ミュートトグルを #app 直下の常設DOMとして作る。
+   * HUDの innerHTML 再構築(renderHud/updatePanelOnly)とは別の要素にすることで、
+   * クリック途中にボタンDOMが消える不発バグを避ける。
+   */
+  private createMuteButton(): void {
+    const app = document.querySelector('#app');
+    if (!app) return;
+    const existing = app.querySelector('#mute-toggle');
+    if (existing) existing.remove();
+    const btn = document.createElement('button');
+    btn.id = 'mute-toggle';
+    btn.type = 'button';
+    btn.title = 'サウンドのオン/オフ';
+    btn.addEventListener('click', () => {
+      const muted = audio.toggleMute();
+      if (!muted) audio.playSfx('click');
+      this.updateMuteButton();
+    });
+    app.appendChild(btn);
+    this.muteBtn = btn;
+    this.updateMuteButton();
+  }
+
+  private updateMuteButton(): void {
+    if (!this.muteBtn) return;
+    const muted = audio.isMuted();
+    this.muteBtn.textContent = muted ? '🔇' : '🔊';
+    this.muteBtn.classList.toggle('muted', muted);
+  }
+
+  /**
+   * フェーズに応じて BGM と勝敗ジングルを制御する。render() から毎回呼ぶ。
+   * - 通常フェーズ: 季節に応じた BGM をループ(idempotent)。
+   * - result フェーズ: BGM を止めて勝敗ジングルを1度だけ鳴らす。
+   */
+  private syncAudio(): void {
+    if (this.state.phase === 'result') {
+      if (!this.resultAnnounced) {
+        this.resultAnnounced = true;
+        audio.stopBgm();
+        audio.playSfx(this.state.winner ? 'victory' : 'defeat');
+      }
+      return;
+    }
+    this.resultAnnounced = false;
+    audio.setBgmSeason(this.state.preview.season);
+    audio.startBgm(this.state.preview.season);
+  }
+
+  private startRun(): void {
+    this.state = beginPlacement(startGame(createGame(String(Date.now()), this.selectedDifficultyId)));
+    this.selectedWorkerId = undefined;
+    this.pendingWorkshop = false;
+    this.effectLayer.removeAll(true);
+    this.persist();
+    this.render();
+  }
+
+  /** セーブから中断していたゲームを復元する(「続きから」)。 */
+  private continueRun(): void {
+    const saved = readSave();
+    if (!saved) {
+      this.render();
+      return;
+    }
+    this.state = saved;
+    this.selectedDifficultyId = saved.difficultyId;
+    this.selectedWorkerId = undefined;
+    this.pendingWorkshop = false;
+    this.effectLayer.removeAll(true);
+    this.render();
+  }
+
+  /**
+   * 現在のゲーム状態を1つのスロットへ自動保存する。
+   * ゲーム終了(勝利/敗北)時はセーブを削除、タイトル画面では保存しない。
+   */
+  private persist(): void {
+    if (this.state.gameOver) {
+      clearSave();
+    } else if (this.state.phase !== 'title') {
+      writeSave(this.state);
+    }
+  }
+
+  private returnToTitle(): void {
+    this.state = createGame(String(Date.now()), this.selectedDifficultyId);
+    this.selectedWorkerId = undefined;
+    this.pendingWorkshop = false;
+    this.effectLayer.removeAll(true);
+    this.render();
+  }
+
   private drawBoard(): void {
-    const g = this.add.graphics();
-    g.fillGradientStyle(0x1a2b21, 0x1a2b21, 0x0f1a14, 0x0f1a14, 1);
-    g.fillRect(0, 0, 1280, 720);
-    // 村の地面
-    g.fillStyle(0x2c4433, 0.9);
-    g.fillRoundedRect(170, 130, 780, 340, 36);
-    g.fillStyle(0x35513c, 0.55);
-    g.fillRoundedRect(190, 148, 740, 304, 30);
-    // 中央の広場
-    g.fillStyle(0x4a6a4e, 0.5);
-    g.fillCircle(560, 296, 62);
-    this.add.text(560, 296, '🏕️', { fontSize: '40px' }).setOrigin(0.5);
+    this.ensureTextures();
+
+    // 奥行きのある背景グラデーション
+    const bg = this.add.graphics().setDepth(-30);
+    bg.fillGradientStyle(0x223528, 0x1a2b21, 0x0d150f, 0x0f1a14, 1);
+    bg.fillRect(0, 0, 1280, 720);
+
+    // 全面に薄いノイズを重ねて質感を出す(タイル)
+    this.add
+      .tileSprite(0, 0, 1280, 720, 'wp-noise')
+      .setOrigin(0)
+      .setAlpha(0.5)
+      .setDepth(-28)
+      .setBlendMode(Phaser.BlendModes.OVERLAY);
+
+    // 季節で塗り替える地面(render で paintGround)
+    this.boardGround = this.add.graphics().setDepth(-20);
+
+    // 盤面のふちを飾る小物(ボードゲームらしさ)
+    const decor = this.add.container(0, 0).setDepth(-18);
+    const props: Array<[string, number, number, string, number]> = [
+      ['🌲', 138, 150, '30px', 0.9], ['🌲', 118, 250, '26px', 0.85], ['🪨', 150, 430, '22px', 0.8],
+      ['🌲', 1000, 150, '30px', 0.9], ['🌾', 1010, 300, '24px', 0.8], ['🌲', 985, 430, '26px', 0.85],
+      ['🍄', 200, 470, '18px', 0.75], ['🌿', 900, 470, '20px', 0.75],
+    ];
+    for (const [emoji, px, py, size, alpha] of props) {
+      decor.add(this.add.text(px, py, emoji, { fontSize: size }).setOrigin(0.5).setAlpha(alpha));
+    }
+
+    // 中央のかがり火(広場)
+    this.add.text(560, 296, '🏕️', { fontSize: '42px' }).setOrigin(0.5).setDepth(-16);
+
+    // 画面端を締めるビネット(スポット/カードより奥)
+    this.add.image(0, 0, 'wp-vignette').setOrigin(0).setDepth(-10);
 
     this.effectLayer = this.add.container(0, 0).setDepth(50);
+  }
+
+  /**
+   * 動的テクスチャ(ノイズ・ビネット)を1度だけ生成する。
+   * 外部アセットは使わず Canvas で描く。Math.random はゲームRNGとは無関係。
+   */
+  private ensureTextures(): void {
+    if (!this.textures.exists('wp-noise')) {
+      const size = 128;
+      const tex = this.textures.createCanvas('wp-noise', size, size);
+      const ctx = tex?.getContext();
+      if (ctx) {
+        const img = ctx.createImageData(size, size);
+        for (let i = 0; i < img.data.length; i += 4) {
+          const v = 90 + Math.floor(Math.random() * 130);
+          img.data[i] = v;
+          img.data[i + 1] = v;
+          img.data[i + 2] = v;
+          img.data[i + 3] = 26;
+        }
+        ctx.putImageData(img, 0, 0);
+        tex?.refresh();
+      }
+    }
+    if (!this.textures.exists('wp-vignette')) {
+      const w = 1280;
+      const h = 720;
+      const tex = this.textures.createCanvas('wp-vignette', w, h);
+      const ctx = tex?.getContext();
+      if (ctx) {
+        const grad = ctx.createRadialGradient(w / 2, h / 2, h * 0.28, w / 2, h / 2, h * 0.82);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(0.7, 'rgba(0,0,0,0.12)');
+        grad.addColorStop(1, 'rgba(6,10,6,0.62)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+        tex?.refresh();
+      }
+    }
+  }
+
+  /** 季節に応じて地面と広場を塗り直す(season 変化時のみ)。 */
+  private paintGround(season: string): void {
+    if (this.paintedSeason === season) return;
+    this.paintedSeason = season;
+    const pal = GROUND_PALETTE[season] ?? GROUND_PALETTE.spring;
+    const g = this.boardGround;
+    g.clear();
+    // 盤の落ち影
+    g.fillStyle(0x000000, 0.35);
+    g.fillRoundedRect(170, 138, 780, 344, 40);
+    // 木枠
+    g.fillStyle(pal.frame, 1);
+    g.fillRoundedRect(164, 124, 792, 352, 40);
+    // 地面(内側グラデーション)
+    g.fillGradientStyle(pal.g0, pal.g0, pal.g1, pal.g1, 1);
+    g.fillRoundedRect(178, 138, 764, 324, 32);
+    // 内側の縁ハイライト
+    g.lineStyle(2, 0xffffff, 0.06);
+    g.strokeRoundedRect(178, 138, 764, 324, 32);
+    // 中央広場
+    g.fillStyle(pal.plaza, 0.55);
+    g.fillCircle(560, 296, 66);
+    g.lineStyle(3, pal.frame, 0.5);
+    g.strokeCircle(560, 296, 66);
   }
 
   private render(): void {
     if (import.meta.env.DEV) {
       (window as unknown as Record<string, unknown>).__state = this.state;
     }
+    this.paintGround(this.state.preview.season);
     this.renderSpots();
     this.renderWorkers();
     this.renderHud();
+    this.syncAudio();
   }
 
   // ---------------------------------------------------------------- spots
@@ -105,6 +334,9 @@ export class GameScene extends Phaser.Scene {
     this.spotViews = [];
     const selected = this.selectedWorker();
 
+    const accent = SEASON_ACCENT[this.state.preview.season] ?? SEASON_ACCENT.spring;
+    const highlight = Boolean(selected) && this.state.phase === 'placement';
+
     for (const spot of availableSpots(this.state.round)) {
       const [x, y] = SPOT_POSITIONS[spot.id] ?? [640, 300];
       const assignedHere = this.state.assignments.filter((assignment) => assignment.spotId === spot.id);
@@ -113,16 +345,43 @@ export class GameScene extends Phaser.Scene {
       const modified = difficulty !== spot.difficulty;
 
       const container = this.add.container(x, y);
-      const card = this.add.rectangle(0, 0, 176, 116, full ? 0x55492c : 0x413723, 1);
-      card.setStrokeStyle(2, selected && !full ? 0xffd97a : 0x76633c);
-      const icon = this.add.text(-60, -30, spot.icon, { fontSize: '34px' }).setOrigin(0.5);
-      const name = this.add.text(-30, -44, spot.name, {
+      const w = 176;
+      const h = 116;
+      const canPick = highlight && !full;
+
+      // タイル(影・木地・季節帯・枠)を Graphics で描く
+      const gfx = this.add.graphics();
+      gfx.fillStyle(0x000000, 0.4);
+      gfx.fillRoundedRect(-w / 2 + 3, -h / 2 + 6, w, h, 14);
+      gfx.fillStyle(full ? 0x55492c : 0x40361f, 1);
+      gfx.fillRoundedRect(-w / 2, -h / 2, w, h, 14);
+      // 上部の季節アクセント帯
+      gfx.fillStyle(accent, full ? 0.55 : 0.85);
+      gfx.fillRoundedRect(-w / 2, -h / 2, w, 9, { tl: 14, tr: 14, bl: 0, br: 0 });
+      // 上面ハイライト
+      gfx.fillStyle(0xffffff, 0.06);
+      gfx.fillRoundedRect(-w / 2 + 4, -h / 2 + 11, w - 8, 26, 8);
+      // 枠線
+      gfx.lineStyle(2, canPick ? 0xffd97a : 0x76633c, 1);
+      gfx.strokeRoundedRect(-w / 2, -h / 2, w, h, 14);
+      if (canPick) {
+        gfx.lineStyle(2, 0xffd97a, 0.35);
+        gfx.strokeRoundedRect(-w / 2 - 3, -h / 2 - 3, w + 6, h + 6, 16);
+      }
+      container.add(gfx);
+
+      const icon = this.add.text(-60, -28, spot.icon, { fontSize: '34px' }).setOrigin(0.5);
+      const name = this.add.text(-30, -42, spot.name, {
         fontFamily: FONT, fontSize: '18px', color: '#f5ead0', fontStyle: '700',
       });
-      const info = this.add.text(-30, -18, `${statLabel(spot.stat)} / 難${difficulty}`, {
+      const info = this.add.text(-30, -16, `${statLabel(spot.stat)} / 難${difficulty}`, {
         fontFamily: FONT, fontSize: '13px', color: modified ? (difficulty > spot.difficulty ? '#ff9d7a' : '#9fe3a0') : '#cbbf9d',
       });
-      container.add([card, icon, name, info]);
+      container.add([icon, name, info]);
+
+      // クリック判定用の透明レイヤ(Graphics の上に重ねる)
+      const card = this.add.rectangle(0, 0, w, h, 0x000000, 0.001);
+      container.add(card);
 
       // 定員スロット
       for (let slot = 0; slot < spot.capacity; slot += 1) {
@@ -189,12 +448,40 @@ export class GameScene extends Phaser.Scene {
       const y = 622;
       const assigned = this.state.assignments.some((assignment) => assignment.workerId === worker.id);
       const selected = this.selectedWorkerId === worker.id;
+      const injured = worker.injured > 0;
+      const weary = worker.fatigue >= 4;
       const container = this.add.container(x, y);
+      const w = 184;
+      const h = 118;
 
-      const card = this.add.rectangle(0, 0, 184, 118, selected ? 0x6b5a2c : assigned ? 0x2c3226 : 0x33402f, 1);
-      card.setStrokeStyle(2.5, selected ? 0xffd97a : worker.injured > 0 ? 0xb04f42 : 0x5f7050);
-      if (assigned && !selected) card.setAlpha(0.75);
+      const bodyColor = selected ? 0x6b5a2c : injured ? 0x3a2622 : assigned ? 0x2c3226 : 0x35422f;
+      const borderColor = selected ? 0xffd97a : injured ? 0xb04f42 : weary ? 0xd8b25a : 0x5f7050;
+
+      // カード(影・本体・革の質感・枠)を Graphics で描く
+      const gfx = this.add.graphics();
+      gfx.fillStyle(0x000000, 0.4);
+      gfx.fillRoundedRect(-w / 2 + 2, -h / 2 + 5, w, h, 14);
+      gfx.fillStyle(bodyColor, assigned && !selected ? 0.82 : 1);
+      gfx.fillRoundedRect(-w / 2, -h / 2, w, h, 14);
+      // アイコン側の色帯(状態で色替え)
+      gfx.fillStyle(injured ? 0xb04f42 : weary ? 0xd8b25a : 0x6f8a5c, 0.9);
+      gfx.fillRoundedRect(-w / 2, -h / 2, 34, h, { tl: 14, tr: 0, bl: 14, br: 0 });
+      // 上面ハイライト
+      gfx.fillStyle(0xffffff, 0.05);
+      gfx.fillRoundedRect(-w / 2 + 4, -h / 2 + 4, w - 8, 22, 8);
+      // 枠線
+      gfx.lineStyle(2.5, borderColor, 1);
+      gfx.strokeRoundedRect(-w / 2, -h / 2, w, h, 14);
+      if (selected) {
+        gfx.lineStyle(2, 0xffd97a, 0.4);
+        gfx.strokeRoundedRect(-w / 2 - 3, -h / 2 - 3, w + 6, h + 6, 16);
+      }
+      container.add(gfx);
+
+      const card = this.add.rectangle(0, 0, w, h, 0x000000, 0.001);
+      container.add(card);
       const icon = this.add.text(-64, -32, worker.icon, { fontSize: '30px' }).setOrigin(0.5);
+      if (assigned && !selected) icon.setAlpha(0.85);
       const name = this.add.text(-42, -44, `${worker.name}${worker.level > 0 ? ` Lv${worker.level + 1}` : ''}`, {
         fontFamily: FONT, fontSize: '16px', color: '#f5ead0', fontStyle: '700',
       });
@@ -212,8 +499,11 @@ export class GameScene extends Phaser.Scene {
         fontFamily: FONT, fontSize: '12px',
         color: worker.injured > 0 ? '#ff9d7a' : worker.fatigue >= 4 ? '#ffd97a' : '#8fa387',
       });
-      const xpBar = this.add.rectangle(-78 + (worker.xp / 5) * 60, 50, (worker.xp / 5) * 120, 4, 0x8fd0ff, 0.9).setOrigin(0.5);
-      container.add([card, icon, name, stats, traitText, status, xpBar]);
+      const xpTrack = this.add.rectangle(-18, 50, 120, 5, 0x1c2418, 0.9).setOrigin(0.5);
+      xpTrack.setStrokeStyle(1, 0x000000, 0.3);
+      const xpBar = this.add.rectangle(-78, 50, (worker.xp / 5) * 120, 5, 0x8fd0ff, 0.95).setOrigin(0, 0.5);
+      container.add([name, stats, traitText, status, xpTrack, xpBar]);
+      card.setDepth(1);
 
       card.setInteractive({ useHandCursor: true });
       card.on('pointerdown', () => this.onWorkerClicked(worker));
@@ -238,8 +528,10 @@ export class GameScene extends Phaser.Scene {
     if (this.state.assignments.some((assignment) => assignment.workerId === worker.id)) {
       this.state = unassignWorker(this.state, worker.id);
       this.selectedWorkerId = undefined;
+      audio.playSfx('unplace');
     } else {
       this.selectedWorkerId = this.selectedWorkerId === worker.id ? undefined : worker.id;
+      audio.playSfx('click');
     }
     this.render();
   }
@@ -248,11 +540,13 @@ export class GameScene extends Phaser.Scene {
     if (this.state.phase !== 'placement' || this.resolving || !this.selectedWorkerId) return;
     if (spot.id === 'workshop') {
       this.pendingWorkshop = true;
+      audio.playSfx('click');
       this.renderHud();
       return;
     }
     this.state = assignWorker(this.state, this.selectedWorkerId, spot.id);
     this.selectedWorkerId = undefined;
+    audio.playSfx('place');
     this.render();
   }
 
@@ -261,6 +555,7 @@ export class GameScene extends Phaser.Scene {
     this.state = assignWorker(this.state, this.selectedWorkerId, 'workshop', buildingId);
     this.selectedWorkerId = undefined;
     this.pendingWorkshop = false;
+    audio.playSfx('place');
     this.render();
   }
 
@@ -272,12 +567,21 @@ export class GameScene extends Phaser.Scene {
    * mousedownとmouseupの間に消えてクリックが不発になるため。
    */
   private updatePanelOnly(): void {
+    // タイトル画面ではパネル差し替え禁止。Phaser は window イベントで
+    // 盤面のホバーも拾うため、タイトルパネルの下にあるワーカーカードへの
+    // pointerover がタイトルパネルを配置フェーズ表示に書き換えてしまい、
+    // #start ボタンが mousedown〜mouseup の間に消えてクリック不発になる。
+    if (this.state.phase === 'title') return;
     if (this.pendingWorkshop) return; // 施設選択中はホバーで邪魔しない
     const panel = this.hud.querySelector('.panel');
     if (panel) panel.innerHTML = this.renderPanel();
   }
 
   private renderHud(): void {
+    if (this.state.phase === 'title') {
+      this.renderTitle();
+      return;
+    }
     const r = this.state.resources;
     const canResolve = this.state.phase === 'placement' && this.state.assignments.length > 0 && !this.resolving;
     const builtIcons = this.state.builtBuildingIds
@@ -310,6 +614,52 @@ export class GameScene extends Phaser.Scene {
       </footer>
     `;
     this.bindHudButtons();
+  }
+
+  private renderTitle(): void {
+    const options = difficultyOrder
+      .map((id) => {
+        const difficulty = difficulties[id];
+        const selected = id === this.selectedDifficultyId;
+        return `
+          <button class="diff-option ${selected ? 'selected' : ''}" data-difficulty="${id}">
+            <span class="d-name">${difficulty.label} <small>⭐目標 ${difficulty.targetProsperity}</small></span>
+            <span class="d-desc">${difficulty.description}</span>
+          </button>
+        `;
+      })
+      .join('');
+    const chosen = getDifficulty(this.selectedDifficultyId);
+    const canContinue = hasSave();
+    this.hud.innerHTML = `
+      <aside class="panel title">
+        <h1>辺境開拓団<small>(仮)</small></h1>
+        <p class="lead">個性を持つワーカーを派遣し、12ラウンドで村の繁栄度を目標まで育てよう。</p>
+        ${canContinue ? '<button id="continue" class="primary continue">▶️ 続きから</button>' : ''}
+        <h2>難易度を選ぶ</h2>
+        <div class="diff-list">${options}</div>
+        <p class="diff-summary">選択中: <b>${chosen.label}</b> / クリア目標 ⭐${chosen.targetProsperity}</p>
+        <button id="start" class="primary start">🚩 新しく始める</button>
+      </aside>
+    `;
+    this.hud.querySelectorAll<HTMLButtonElement>('.diff-option').forEach((button) => {
+      button.addEventListener('click', () => {
+        const id = button.dataset.difficulty as DifficultyId | undefined;
+        if (id) {
+          this.selectedDifficultyId = id;
+          audio.playSfx('click');
+          this.renderTitle();
+        }
+      });
+    });
+    this.hud.querySelector('#start')?.addEventListener('click', () => {
+      audio.playSfx('click');
+      this.startRun();
+    });
+    this.hud.querySelector('#continue')?.addEventListener('click', () => {
+      audio.playSfx('click');
+      this.continueRun();
+    });
   }
 
   private renderPanel(): string {
@@ -377,19 +727,21 @@ export class GameScene extends Phaser.Scene {
   }
 
   private bindHudButtons(): void {
-    this.hud.querySelector('#resolve')?.addEventListener('click', () => void this.playResolution());
+    this.hud.querySelector('#resolve')?.addEventListener('click', () => {
+      audio.playSfx('click');
+      void this.playResolution();
+    });
     this.hud.querySelector('#upkeep')?.addEventListener('click', () => {
+      audio.playSfx('click');
       this.state = finishUpkeep(this.state);
       if (!this.state.gameOver) this.state = beginPlacement(this.state);
       this.selectedWorkerId = undefined;
+      this.persist();
       this.render();
     });
     this.hud.querySelector('#restart')?.addEventListener('click', () => {
-      this.state = beginPlacement(startGame(createGame(String(Date.now()))));
-      this.selectedWorkerId = undefined;
-      this.pendingWorkshop = false;
-      this.effectLayer.removeAll(true);
-      this.render();
+      audio.playSfx('click');
+      this.returnToTitle();
     });
     this.hud.querySelectorAll<HTMLButtonElement>('.build-option').forEach((button) => {
       button.addEventListener('click', () => this.chooseBuilding(button.dataset.building || undefined));
@@ -448,44 +800,51 @@ export class GameScene extends Phaser.Scene {
     }
     this.effectLayer.removeAll(true);
     this.resolving = false;
+    this.persist();
     this.render();
   }
 
   private animateResult(result: ResolutionResult): Promise<void> {
     const [x, y] = SPOT_POSITIONS[result.spotId] ?? [640, 300];
-    const outcomeColors: Record<string, string> = {
-      criticalSuccess: '#ffd97a',
-      success: '#9fe3a0',
-      failure: '#b9b9b9',
-      criticalFailure: '#ff7a7a',
-    };
+    const style = OUTCOME_STYLE[result.outcome] ?? OUTCOME_STYLE.failure;
 
     return new Promise((resolve) => {
-      const dice1 = this.makeDie(x - 24, y - 90);
-      const dice2 = this.makeDie(x + 24, y - 90);
+      const dice1 = this.makeDie(x - 26, y - 92);
+      const dice2 = this.makeDie(x + 26, y - 92);
+      audio.playSfx('dice');
       let ticks = 0;
       const roller = this.time.addEvent({
         delay: 70,
         repeat: 7,
         callback: () => {
           ticks += 1;
-          const rand = () => String(Phaser.Math.Between(1, 6));
-          (dice1.getAt(1) as Phaser.GameObjects.Text).setText(ticks > 7 ? String(result.dice[0]) : rand());
-          (dice2.getAt(1) as Phaser.GameObjects.Text).setText(ticks > 7 ? String(result.dice[1]) : rand());
+          dice1.face(Phaser.Math.Between(1, 6));
+          dice2.face(Phaser.Math.Between(1, 6));
         },
       });
 
       this.time.delayedCall(620, () => {
         roller.remove();
-        (dice1.getAt(1) as Phaser.GameObjects.Text).setText(String(result.dice[0]));
-        (dice2.getAt(1) as Phaser.GameObjects.Text).setText(String(result.dice[1]));
+        // 確定した目を結果段階の色で描き、着地の弾みを付ける
+        dice1.face(result.dice[0], style.face, style.num);
+        dice2.face(result.dice[1], style.face, style.num);
+        for (const die of [dice1, dice2]) {
+          this.tweens.add({ targets: die.container, scale: { from: 1.25, to: 1 }, duration: 220, ease: 'Back.easeOut' });
+        }
+        this.spawnOutcomeBurst(x, y - 92, result.outcome, style.num);
 
-        const banner = this.add.text(x, y - 130, `${outcomeLabel(result.outcome)}  ${result.total} vs ${result.target}`, {
-          fontFamily: FONT, fontSize: '24px', color: outcomeColors[result.outcome],
-          fontStyle: '900', stroke: '#141009', strokeThickness: 5,
-        }).setOrigin(0.5).setScale(0.4);
+        // 結果音: 工房の成功は建設音、それ以外は成否に応じた音
+        const succeeded = result.outcome === 'success' || result.outcome === 'criticalSuccess';
+        if (result.spotId === 'workshop' && succeeded) {
+          audio.playSfx('build');
+        } else {
+          audio.playSfx(result.outcome);
+        }
+
+        const banner = this.makeBanner(x, y - 134, `${outcomeLabel(result.outcome)}  ${result.total} vs ${result.target}`, style);
         this.effectLayer.add(banner);
-        this.tweens.add({ targets: banner, scale: 1, duration: 180, ease: 'Back.easeOut' });
+        banner.setScale(0.4);
+        this.tweens.add({ targets: banner, scale: 1, duration: 200, ease: 'Back.easeOut' });
 
         const floats: string[] = [
           ...result.rewards.map((reward) => `+${reward.amount}${resourceIcon(reward.resource)}`),
@@ -504,12 +863,12 @@ export class GameScene extends Phaser.Scene {
 
         this.time.delayedCall(this.skipResolution ? 100 : 1050 + floats.length * 90, () => {
           this.tweens.add({
-            targets: [dice1, dice2, banner],
+            targets: [dice1.container, dice2.container, banner],
             alpha: 0,
             duration: 200,
             onComplete: () => {
-              dice1.destroy();
-              dice2.destroy();
+              dice1.container.destroy();
+              dice2.container.destroy();
               this.effectLayer.removeAll(true);
               this.renderHud();
               resolve();
@@ -520,16 +879,76 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private makeDie(x: number, y: number): Phaser.GameObjects.Container {
+  /**
+   * 角丸・ピップ表示のダイスを作る。face(value, faceColor?, pipColor?) で目を描き直す。
+   * 転がっている間はランダムな目を、確定時は結果段階の色で描画する。
+   */
+  private makeDie(x: number, y: number): { container: Phaser.GameObjects.Container; face: (value: number, faceColor?: number, pipColor?: number) => void } {
     const container = this.add.container(x, y).setDepth(60);
-    const body = this.add.rectangle(0, 0, 38, 38, 0xf5ead0, 1);
-    body.setStrokeStyle(2, 0x141009);
-    const num = this.add.text(0, 0, '?', {
-      fontFamily: FONT, fontSize: '22px', color: '#141009', fontStyle: '900',
+    const g = this.add.graphics();
+    container.add(g);
+    const s = 40;
+    const face = (value: number, faceColor = 0xf6ecd6, pipColor = 0x241a12): void => {
+      g.clear();
+      g.fillStyle(0x000000, 0.35);
+      g.fillRoundedRect(-s / 2 + 2, -s / 2 + 3, s, s, 9);
+      g.fillStyle(faceColor, 1);
+      g.fillRoundedRect(-s / 2, -s / 2, s, s, 9);
+      g.fillStyle(0xffffff, 0.22);
+      g.fillRoundedRect(-s / 2, -s / 2, s, 15, { tl: 9, tr: 9, bl: 0, br: 0 });
+      g.lineStyle(2, 0x2a2018, 1);
+      g.strokeRoundedRect(-s / 2, -s / 2, s, s, 9);
+      g.fillStyle(pipColor, 1);
+      for (const [px, py] of PIP_LAYOUT[value] ?? PIP_LAYOUT[1]) {
+        g.fillCircle(px * 10, py * 10, 3.6);
+      }
+    };
+    face(1);
+    this.tweens.add({ targets: container, angle: { from: -9, to: 9 }, duration: 90, yoyo: true, repeat: 4 });
+    return { container, face };
+  }
+
+  /** 結果段階のラベルを角丸の台座付きで作る。 */
+  private makeBanner(x: number, y: number, label: string, style: { hex: string; num: number }): Phaser.GameObjects.Container {
+    const container = this.add.container(x, y).setDepth(61);
+    const text = this.add.text(0, 0, label, {
+      fontFamily: FONT, fontSize: '24px', color: style.hex, fontStyle: '900',
+      stroke: '#141009', strokeThickness: 5,
     }).setOrigin(0.5);
-    container.add([body, num]);
-    this.tweens.add({ targets: container, angle: { from: -8, to: 8 }, duration: 90, yoyo: true, repeat: 4 });
+    const bw = text.width + 30;
+    const bh = text.height + 12;
+    const bg = this.add.graphics();
+    bg.fillStyle(0x14100a, 0.86);
+    bg.fillRoundedRect(-bw / 2, -bh / 2, bw, bh, 10);
+    bg.lineStyle(2, style.num, 0.9);
+    bg.strokeRoundedRect(-bw / 2, -bh / 2, bw, bh, 10);
+    container.add([bg, text]);
     return container;
+  }
+
+  /** 確定時に広がる光の輪。大成功/大失敗はより強く演出する。 */
+  private spawnOutcomeBurst(x: number, y: number, outcome: string, color: number): void {
+    const strong = outcome === 'criticalSuccess' || outcome === 'criticalFailure';
+    const ring = this.add.graphics().setDepth(59);
+    ring.lineStyle(strong ? 4 : 2.5, color, 0.9);
+    ring.strokeCircle(0, 0, 20);
+    ring.setPosition(x, y);
+    this.effectLayer.add(ring);
+    this.tweens.add({
+      targets: ring,
+      scale: { from: 0.4, to: strong ? 2.6 : 1.8 },
+      alpha: { from: 0.9, to: 0 },
+      duration: strong ? 620 : 420,
+      ease: 'Cubic.easeOut',
+      onComplete: () => ring.destroy(),
+    });
+    if (strong) {
+      const flash = this.add.graphics().setDepth(58);
+      flash.fillStyle(color, outcome === 'criticalSuccess' ? 0.14 : 0.12);
+      flash.fillRect(0, 0, 1280, 720);
+      this.effectLayer.add(flash);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 360, onComplete: () => flash.destroy() });
+    }
   }
 
   private formatResult(result: ResolutionResult): string {

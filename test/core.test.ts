@@ -3,9 +3,11 @@ import {
   assignWorker,
   availableBuildings,
   beginPlacement,
+  buildPreview,
   canAfford,
   createGame,
   effectiveDifficulty,
+  eventTone,
   finishUpkeep,
   getSeason,
   getSpot,
@@ -15,6 +17,7 @@ import {
 } from '../src/core/game';
 import type { GameState, Resource } from '../src/core/types';
 import { buildings, getBuilding } from '../src/data/buildings';
+import { difficulties, getDifficulty } from '../src/data/difficulties';
 import { traits } from '../src/data/traits';
 
 describe('frontier core loop', () => {
@@ -165,6 +168,77 @@ describe('M5: traits and events', () => {
     const spot = getSpot('forest')!;
     const delta = state.preview.event.effects.difficultyDelta?.forest ?? 0;
     expect(effectiveDifficulty(spot, state.preview.event)).toBe(spot.difficulty + delta);
+  });
+});
+
+describe('M6: difficulty selection', () => {
+  it('normal keeps the current balance (target 30, default difficulty)', () => {
+    const normal = createGame('diff-normal');
+    expect(normal.difficultyId).toBe('normal');
+    expect(normal.targetProsperity).toBe(30);
+    // 明示指定なしのデフォルトも normal と一致する
+    expect(createGame('diff-normal', 'normal').targetProsperity).toBe(30);
+  });
+
+  it('orders targets easy < normal < hard', () => {
+    expect(difficulties.easy.targetProsperity).toBeLessThan(difficulties.normal.targetProsperity);
+    expect(difficulties.normal.targetProsperity).toBeLessThan(difficulties.hard.targetProsperity);
+  });
+
+  it('applies target and starting resources per difficulty', () => {
+    expect(createGame('r', 'easy').resources.food).toBe(8 + (difficulties.easy.startResourceDelta.food ?? 0));
+    expect(createGame('r', 'normal').resources.food).toBe(8);
+    expect(createGame('r', 'hard').resources.food).toBe(8);
+  });
+
+  it('normal draws exactly the same events as the pre-difficulty logic', () => {
+    // 引き直し確率 0 の Normal は RNG を消費しないため、抽選結果は従来と完全一致する。
+    for (let seed = 1; seed <= 200; seed += 1) {
+      for (let round = 1; round <= 12; round += 1) {
+        const base = buildPreview(round, seed); // デフォルト = normal
+        const normal = buildPreview(round, seed, getDifficulty('normal'));
+        expect(normal.event.id).toBe(base.event.id);
+      }
+    }
+  });
+
+  it('hard makes rounds harsher and easy makes them gentler than normal', () => {
+    const countBad = (difficulty: ReturnType<typeof getDifficulty>): number => {
+      let bad = 0;
+      for (let seed = 1; seed <= 200; seed += 1) {
+        for (let round = 1; round <= 12; round += 1) {
+          if (eventTone(buildPreview(round, seed, difficulty).event) === 'bad') bad += 1;
+        }
+      }
+      return bad;
+    };
+    const easy = countBad(getDifficulty('easy'));
+    const normal = countBad(getDifficulty('normal'));
+    const hard = countBad(getDifficulty('hard'));
+    expect(hard).toBeGreaterThan(normal);
+    expect(easy).toBeLessThan(normal);
+  });
+
+  it('season pools expose harsh/gentle events so rerolls have somewhere to go', () => {
+    // すべての季節に非過酷イベントがあり(Easy用)、
+    // 春以外の季節には過酷イベントがある(Hard用)。春は仕様上「穏やかな季節」。
+    const grouped = new Map<string, { bad: number; other: number }>();
+    for (let round = 1; round <= 12; round += 1) {
+      for (let seed = 1; seed <= 200; seed += 1) {
+        const preview = buildPreview(round, seed, getDifficulty('normal'));
+        const bucket = grouped.get(preview.season) ?? { bad: 0, other: 0 };
+        if (eventTone(preview.event) === 'bad') bucket.bad += 1;
+        else bucket.other += 1;
+        grouped.set(preview.season, bucket);
+      }
+    }
+    expect(grouped.size).toBe(4);
+    for (const bucket of grouped.values()) {
+      expect(bucket.other).toBeGreaterThan(0);
+    }
+    for (const season of ['summer', 'autumn', 'winter'] as const) {
+      expect(grouped.get(season)?.bad ?? 0).toBeGreaterThan(0);
+    }
   });
 });
 

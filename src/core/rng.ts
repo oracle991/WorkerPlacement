@@ -20,6 +20,16 @@ export class Rng {
   chance(probability: number): boolean {
     return this.next() < probability;
   }
+
+  /** mulberry32 の内部状態を取得する(セーブ用)。 */
+  getState(): number {
+    return this.state >>> 0;
+  }
+
+  /** 保存した内部状態を復元する。復元後の乱数列は中断なしの場合と一致する。 */
+  setState(state: number): void {
+    this.state = state >>> 0;
+  }
 }
 
 export function seedFromText(text: string): number {

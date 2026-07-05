@@ -1,4 +1,5 @@
 import { buildings, getBuilding } from '../data/buildings';
+import { DEFAULT_DIFFICULTY, getDifficulty } from '../data/difficulties';
 import { eventTable } from '../data/events';
 import { seasonIcons, seasonLabels, seasonNotes, seasons } from '../data/seasons';
 import { spots } from '../data/spots';
@@ -15,6 +16,8 @@ import { Rng, seedFromText } from './rng';
 import type {
   Assignment,
   Building,
+  Difficulty,
+  DifficultyId,
   GameState,
   Outcome,
   Resource,
@@ -51,20 +54,26 @@ export const FOOD_PURCHASE_GOLD = 2;
 export const MARKET_SALE_LIMIT = 2;
 const FATIGUE_LEAVE_THRESHOLD = 8;
 
-export function createGame(seedText = String(Date.now())): GameState {
+export function createGame(seedText = String(Date.now()), difficultyId: DifficultyId = DEFAULT_DIFFICULTY): GameState {
   const seed = seedFromText(seedText);
+  const difficulty = getDifficulty(difficultyId);
+  const resources: Resources = { food: 8, wood: 3, ore: 1, gold: 2, prosperity: 0 };
+  for (const [resource, delta] of Object.entries(difficulty.startResourceDelta) as Array<[Resource, number]>) {
+    resources[resource] += delta;
+  }
   return {
     seed,
     round: 1,
     maxRounds: 12,
-    targetProsperity: 30,
+    targetProsperity: difficulty.targetProsperity,
+    difficultyId,
     phase: 'title',
     workers: cloneWorkers(initialWorkers),
-    resources: { food: 8, wood: 3, ore: 1, gold: 2, prosperity: 0 },
+    resources,
     assignments: [],
     builtBuildingIds: [],
     log: ['開拓団が辺境の村へ到着した。'],
-    preview: buildPreview(1, seed),
+    preview: buildPreview(1, seed, difficulty),
     lastResults: [],
     winner: false,
     gameOver: false,
@@ -72,12 +81,16 @@ export function createGame(seedText = String(Date.now())): GameState {
 }
 
 export function startGame(state: GameState): GameState {
-  return { ...state, phase: 'prepare', preview: buildPreview(state.round, state.seed) };
+  return {
+    ...state,
+    phase: 'prepare',
+    preview: buildPreview(state.round, state.seed, getDifficulty(state.difficultyId)),
+  };
 }
 
 export function beginPlacement(state: GameState): GameState {
   if (state.gameOver) return state;
-  const preview = buildPreview(state.round, state.seed);
+  const preview = buildPreview(state.round, state.seed, getDifficulty(state.difficultyId));
   const resources = { ...state.resources };
   const log: string[] = [];
   for (const gain of preview.event.effects.immediate ?? []) {
@@ -209,7 +222,7 @@ export function finishUpkeep(state: GameState): GameState {
     workers,
     resources,
     assignments: [],
-    preview: buildPreview(gameOver ? state.round : state.round + 1, state.seed),
+    preview: buildPreview(gameOver ? state.round : state.round + 1, state.seed, getDifficulty(state.difficultyId)),
     winner,
     gameOver,
     log: [...log, ...state.log].slice(0, 40),
@@ -220,11 +233,15 @@ export function getSeason(round: number): Season {
   return seasons[Math.min(seasons.length - 1, Math.floor((round - 1) / 3))];
 }
 
-export function buildPreview(round: number, seed: number): RoundPreview {
+export function buildPreview(
+  round: number,
+  seed: number,
+  difficulty: Difficulty = getDifficulty(DEFAULT_DIFFICULTY),
+): RoundPreview {
   const season = getSeason(round);
   const pool = eventTable[season];
   const rng = new Rng(seed + round * 7919);
-  const event = pool[rng.int(0, pool.length - 1)];
+  const event = biasEventForDifficulty(pool[rng.int(0, pool.length - 1)], pool, difficulty, rng);
   return {
     season,
     seasonLabel: `${seasonIcons[season]}${seasonLabels[season]}`,
@@ -232,6 +249,51 @@ export function buildPreview(round: number, seed: number): RoundPreview {
     event,
     unlockedSpotIds: spots.filter((spot) => isSpotUnlocked(spot, round)).map((spot) => spot.id),
   };
+}
+
+export type EventTone = 'good' | 'bad' | 'neutral';
+
+/**
+ * ラウンドイベントの過酷さを分類する。
+ * 「過酷(bad)」= スポット難易度を上げる or 維持食料を増やす効果を持つイベント。
+ * 難易度による引き直しはこの分類を基準に行う。
+ */
+export function eventTone(event: RoundEvent): EventTone {
+  const deltas = Object.values(event.effects.difficultyDelta ?? {});
+  const upkeep = event.effects.upkeepFoodDelta ?? 0;
+  if (deltas.some((delta) => delta > 0) || upkeep > 0) return 'bad';
+  if (
+    deltas.some((delta) => delta < 0) ||
+    upkeep < 0 ||
+    event.effects.spotBonus !== undefined ||
+    (event.effects.immediate?.length ?? 0) > 0
+  ) {
+    return 'good';
+  }
+  return 'neutral';
+}
+
+/**
+ * 難易度に応じてイベントを引き直す。
+ * Hard: 過酷でないイベントを一定確率で過酷なイベントへ差し替える。
+ * Easy: 過酷なイベントを一定確率で和らいだイベントへ差し替える。
+ * どちらの確率も 0(=Normal)のときは RNG を消費せず、抽選結果は従来と一致する。
+ */
+function biasEventForDifficulty(
+  event: RoundEvent,
+  pool: RoundEvent[],
+  difficulty: Difficulty,
+  rng: Rng,
+): RoundEvent {
+  if (difficulty.harshEventChance > 0 && eventTone(event) !== 'bad' && rng.chance(difficulty.harshEventChance)) {
+    const harsh = pool.filter((candidate) => eventTone(candidate) === 'bad');
+    if (harsh.length > 0) return harsh[rng.int(0, harsh.length - 1)];
+  }
+  if (difficulty.kindEventChance > 0 && eventTone(event) === 'bad' && rng.chance(difficulty.kindEventChance)) {
+    const kind = pool.filter((candidate) => eventTone(candidate) !== 'bad');
+    if (kind.length > 0) return kind[rng.int(0, kind.length - 1)];
+  }
+  return event;
 }
 
 export function isSpotUnlocked(spot: Spot, round: number): boolean {

@@ -3,6 +3,7 @@ export type Resource = 'food' | 'wood' | 'ore' | 'gold' | 'prosperity';
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
 export type Phase = 'title' | 'prepare' | 'placement' | 'resolution' | 'upkeep' | 'result';
 export type Outcome = 'criticalSuccess' | 'success' | 'failure' | 'criticalFailure';
+export type DifficultyId = 'easy' | 'normal' | 'hard';
 export type TraitId =
   | 'mighty'
   | 'crafty'
@@ -135,6 +136,7 @@ export interface GameState {
   round: number;
   maxRounds: number;
   targetProsperity: number;
+  difficultyId: DifficultyId;
   phase: Phase;
   workers: Worker[];
   resources: Resources;
@@ -145,6 +147,26 @@ export interface GameState {
   lastResults: ResolutionResult[];
   winner: boolean;
   gameOver: boolean;
+}
+
+export interface Difficulty {
+  id: DifficultyId;
+  label: string;
+  description: string;
+  /** クリアに必要な繁栄度 */
+  targetProsperity: number;
+  /**
+   * 引いたラウンドイベントが「過酷でない」とき、過酷なイベントへ引き直す確率(Hard用)。
+   * 0 なら引き直さない(RNG消費なし)。
+   */
+  harshEventChance: number;
+  /**
+   * 引いたラウンドイベントが「過酷」なとき、和らげたイベントへ引き直す確率(Easy用)。
+   * 0 なら引き直さない(RNG消費なし)。
+   */
+  kindEventChance: number;
+  /** 開始時の資源補正(基準値への加算) */
+  startResourceDelta: Partial<Resources>;
 }
 
 export interface TraitContext {
