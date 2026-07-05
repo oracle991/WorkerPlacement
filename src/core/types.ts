@@ -3,7 +3,20 @@ export type Resource = 'food' | 'wood' | 'ore' | 'gold' | 'prosperity';
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
 export type Phase = 'title' | 'prepare' | 'placement' | 'resolution' | 'upkeep' | 'result';
 export type Outcome = 'criticalSuccess' | 'success' | 'failure' | 'criticalFailure';
-export type TraitId = 'mighty' | 'careful' | 'lucky' | 'social' | 'sturdy' | 'crafty';
+export type TraitId =
+  | 'mighty'
+  | 'crafty'
+  | 'sage'
+  | 'charming'
+  | 'careful'
+  | 'lucky'
+  | 'social'
+  | 'sturdy'
+  | 'hardworking'
+  | 'merchant'
+  | 'timid'
+  | 'lazy'
+  | 'frail';
 
 export interface Worker {
   id: string;
@@ -14,6 +27,7 @@ export interface Worker {
   fatigue: number;
   injured: number;
   xp: number;
+  level: number;
 }
 
 export interface SpotReward {
@@ -39,9 +53,34 @@ export interface Spot {
   description: string;
 }
 
+export interface BuildingEffects {
+  /** スポット成功時の追加報酬: spotId -> 追加報酬 */
+  spotBonus?: { spotId: string; resource: Resource; amount: number };
+  /** 維持フェーズの食料消費 -N */
+  foodUpkeepSaving?: number;
+  /** 維持フェーズの疲労回復 +N */
+  fatigueRecoveryBonus?: number;
+  /** 維持フェーズの負傷回復 +N */
+  injuryRecoveryBonus?: number;
+  /** 市場売却時の追加金貨 */
+  marketGoldBonus?: number;
+}
+
+export interface Building {
+  id: string;
+  name: string;
+  icon: string;
+  cost: Partial<Record<Resource, number>>;
+  prosperity: number;
+  effects: BuildingEffects;
+  description: string;
+}
+
 export interface Assignment {
   workerId: string;
   spotId: string;
+  /** 工房での建設対象。未指定なら修繕(小額の繁栄度) */
+  buildingId?: string;
 }
 
 export interface Resources {
@@ -52,10 +91,30 @@ export interface Resources {
   prosperity: number;
 }
 
+export interface RoundEventEffects {
+  /** spotId -> 難易度補正 */
+  difficultyDelta?: Record<string, number>;
+  /** spotId -> 成功時の追加報酬 */
+  spotBonus?: { spotId: string; resource: Resource; amount: number };
+  /** 準備フェーズで即時獲得する資源 */
+  immediate?: SpotReward[];
+  /** 維持フェーズの食料消費への補正 */
+  upkeepFoodDelta?: number;
+}
+
+export interface RoundEvent {
+  id: string;
+  name: string;
+  season: Season;
+  description: string;
+  effects: RoundEventEffects;
+}
+
 export interface RoundPreview {
   season: Season;
   seasonLabel: string;
-  seasonEvent: string;
+  seasonNote: string;
+  event: RoundEvent;
   unlockedSpotIds: string[];
 }
 
@@ -67,6 +126,7 @@ export interface ResolutionResult {
   target: number;
   outcome: Outcome;
   rewards: SpotReward[];
+  spent: SpotReward[];
   notes: string[];
 }
 
@@ -79,6 +139,7 @@ export interface GameState {
   workers: Worker[];
   resources: Resources;
   assignments: Assignment[];
+  builtBuildingIds: string[];
   log: string[];
   preview: RoundPreview;
   lastResults: ResolutionResult[];
@@ -90,5 +151,5 @@ export interface TraitContext {
   worker: Worker;
   spot: Spot;
   assignments: Assignment[];
-  margin?: number;
+  difficulty: number;
 }

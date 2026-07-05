@@ -22,7 +22,8 @@
   - [types.ts](src/core/types.ts) 型定義 / [rng.ts](src/core/rng.ts) シード付き乱数 / [game.ts](src/core/game.ts) ゲーム進行。
 - **Phaser Scene ([src/scenes/](src/scenes/)) は描画・入力・演出・UI接続だけ**を担当する。
 - バランス調整対象のデータは [src/data/](src/data/) の定義ファイルへ分離
-  ([workers.ts](src/data/workers.ts) / [spots.ts](src/data/spots.ts) / [traits.ts](src/data/traits.ts) / [seasons.ts](src/data/seasons.ts))。
+  ([workers.ts](src/data/workers.ts) / [spots.ts](src/data/spots.ts) / [traits.ts](src/data/traits.ts) /
+  [seasons.ts](src/data/seasons.ts) / [buildings.ts](src/data/buildings.ts) / [events.ts](src/data/events.ts))。
   → コード変更なしで数値調整できることを維持する。
 
 ## コマンド
@@ -33,14 +34,16 @@
 
 ## 開発方針
 - **ロジックを描画から分離した状態を必ず保つ**(UI作業とバランス調整を並行可能にするため)。
-- 各マイルストーンは常に「動く状態」で積み上げる。現状は **M4まで実装済み**
-  (季節システム・スポット解禁・勝敗判定・12ラウンド完走)。
+- 各マイルストーンは常に「動く状態」で積み上げる。現状は **M5まで実装済み**
+  (施設建設によるリソースマネジメント・個性13種・ラウンドイベントテーブル・
+  勧誘のランダム生成・経験値成長・疲労/負傷調整・Botシミュレーションでの勝率確認)。
 - コアロジックの変更にはユニットテストを伴わせ、ヘッドレスで1ゲーム完走できる状態を維持する。
 - ランダム要素は使うが「知らされていない失敗」は作らない。判定値・成功率は配置前に必ず見せる。
 - プロトタイプのビジュアルは色分け図形+絵文字プレースホルダで可。後からアセット差し替え。
 
 ## 実装スコープの注意
-- ワーカーの成長(経験値→ステータス+1)、施設バリエーション、勧誘、負傷/疲労調整は **M5以降**。
+- 残るマイルストーンは **M6**(アセット差し替え・SE/BGM・難易度選択・localStorageセーブ・公開)。
+- バランスは `test/core.test.ts` のBotシミュレーション(勝率40〜60%目標)で回帰確認できる。
 - セーブは当面 `localStorage` の中断再開のみ。ホスティングは完全静的サイト。
 - 対応環境は最新デスクトップ Chrome/Edge/Firefox。1280×720基準 + Phaser `Scale.FIT`。
 - 日本語UIは Webフォント読み込みを使う。

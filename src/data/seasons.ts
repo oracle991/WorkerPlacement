@@ -9,9 +9,17 @@ export const seasonLabels: Record<Season, string> = {
   winter: '冬',
 };
 
-export const seasonEvents: Record<Season, string> = {
-  spring: '芽吹き: 農場の食料 +1',
-  summer: '炎天: 維持で疲労回復が少し鈍る',
-  autumn: '収穫: 維持時に食料 +1',
-  winter: '冬支度: 食料消費 +1、農場の産出半減',
+export const seasonIcons: Record<Season, string> = {
+  spring: '🌸',
+  summer: '☀️',
+  autumn: '🍂',
+  winter: '❄️',
+};
+
+/** 季節ごとの固定ルール(ラウンドイベントとは別に常時適用) */
+export const seasonNotes: Record<Season, string> = {
+  spring: '穏やかな季節。特別な補正はない。',
+  summer: '維持フェーズの疲労回復がない。',
+  autumn: '維持フェーズで食料 +1。',
+  winter: '食料消費 +1、農場の産出半減。',
 };
