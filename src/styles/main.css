@@ -10,9 +10,13 @@
 
 body {
   margin: 0;
-  min-width: 100vw;
-  min-height: 100vh;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+  position: fixed;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 button {
@@ -22,8 +26,11 @@ button {
 #app {
   position: relative;
   width: 100vw;
+  width: 100dvw;
   height: 100vh;
+  height: 100dvh;
   background: #10160f;
+  overflow: hidden;
 }
 
 #game-container {
@@ -31,10 +38,59 @@ button {
   height: 100%;
 }
 
+#game-container canvas {
+  display: block;
+}
+
 #hud {
   pointer-events: none;
   position: absolute;
   inset: 0;
+  padding:
+    env(safe-area-inset-top)
+    env(safe-area-inset-right)
+    env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+#orientation-lock {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(70% 70% at 50% 35%, rgba(69, 82, 47, 0.95), rgba(16, 22, 15, 0.98)),
+    #10160f;
+  text-align: center;
+}
+
+#orientation-lock > div {
+  max-width: 320px;
+  padding: 20px 22px;
+  border: 1px solid rgba(240, 224, 170, 0.32);
+  border-radius: 14px;
+  background: rgba(24, 30, 20, 0.92);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+}
+
+#orientation-lock strong,
+#orientation-lock span {
+  display: block;
+}
+
+#orientation-lock strong {
+  margin-bottom: 8px;
+  color: #ffe9b0;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+#orientation-lock span {
+  color: rgba(240, 232, 210, 0.82);
+  font-size: 14px;
 }
 
 /* ---------------------------------- mute toggle (常設・HUD再構築の外) */
@@ -522,4 +578,224 @@ button {
 .actions button:disabled {
   cursor: default;
   opacity: 0.4;
+}
+
+@media (orientation: portrait) and (max-width: 900px) {
+  #hud,
+  #mute-toggle {
+    display: none;
+  }
+
+  #orientation-lock {
+    pointer-events: auto;
+    display: grid;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  #mute-toggle {
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    left: calc(8px + env(safe-area-inset-left));
+    width: 34px;
+    height: 34px;
+    font-size: 16px;
+  }
+
+  .topbar {
+    top: calc(7px + env(safe-area-inset-top));
+    width: min(1000px, calc(100vw - 18px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    gap: 6px;
+  }
+
+  .pill {
+    padding: 5px 9px;
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+
+  .pill.round span {
+    font-size: 10px;
+  }
+
+  .resources {
+    gap: 4px;
+  }
+
+  .resources span {
+    min-width: 46px;
+    padding: 5px 6px;
+    border-radius: 8px;
+    font-size: 11px;
+  }
+
+  .resources .prosperity small {
+    font-size: 9px;
+  }
+
+  .eventbar {
+    top: calc(42px + env(safe-area-inset-top));
+    max-width: min(620px, calc(100vw - 190px));
+    padding: 4px 10px;
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+  }
+
+  .eventbar em {
+    margin-left: 6px;
+    font-size: 9.5px;
+  }
+
+  .built {
+    top: calc(68px + env(safe-area-inset-top));
+    padding: 2px 9px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  .built span {
+    font-size: 14px;
+  }
+
+  .panel {
+    top: calc(88px + env(safe-area-inset-top));
+    right: calc(8px + env(safe-area-inset-right));
+    width: clamp(184px, 29vw, 250px);
+    min-height: 0;
+    max-height: calc(100dvh - 146px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .panel.result {
+    top: calc(66px + env(safe-area-inset-top));
+    width: min(360px, calc(100vw - 24px));
+    max-height: calc(100dvh - 82px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  .panel h2 {
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+
+  .panel p {
+    margin: 4px 0;
+  }
+
+  .panel ul,
+  .panel ol {
+    margin-top: 5px;
+    padding-left: 16px;
+  }
+
+  .panel .rank {
+    font-size: 32px;
+  }
+
+  .log {
+    font-size: 10.5px;
+  }
+
+  .panel.title {
+    width: min(430px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    padding: 12px 14px;
+  }
+
+  .panel.title h1 {
+    font-size: 25px;
+  }
+
+  .panel.title h1 small {
+    font-size: 12px;
+  }
+
+  .panel.title h2 {
+    margin: 9px 0 6px;
+    font-size: 13px;
+  }
+
+  .panel.title .lead,
+  .diff-summary {
+    font-size: 11px;
+  }
+
+  .diff-list {
+    gap: 5px;
+  }
+
+  .diff-option {
+    padding: 7px 9px;
+    border-radius: 8px;
+  }
+
+  .diff-option .d-name {
+    font-size: 12px;
+  }
+
+  .diff-option .d-name small,
+  .diff-option .d-desc {
+    font-size: 10px;
+  }
+
+  .panel.title .start,
+  .panel.title .continue {
+    min-height: 34px;
+    padding: 0 18px;
+    border-radius: 9px;
+    font-size: 12px;
+  }
+
+  .build-list {
+    gap: 5px;
+    margin-top: 6px;
+  }
+
+  .build-option {
+    padding: 6px 8px;
+    border-radius: 8px;
+  }
+
+  .build-option .b-name,
+  .build-option .b-cost,
+  .build-option .b-desc {
+    font-size: 10.5px;
+  }
+
+  .actions {
+    right: calc(8px + env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    gap: 6px;
+  }
+
+  .actions button {
+    min-width: 72px;
+    min-height: 34px;
+    padding: 0 10px;
+    border-radius: 9px;
+    font-size: 11.5px;
+  }
+}
+
+@media (max-height: 390px) and (orientation: landscape) {
+  .panel {
+    top: calc(78px + env(safe-area-inset-top));
+    width: clamp(172px, 27vw, 220px);
+    max-height: calc(100dvh - 126px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    font-size: 10px;
+  }
+
+  .eventbar {
+    max-width: min(520px, calc(100vw - 170px));
+  }
+
+  .actions button {
+    min-width: 66px;
+    min-height: 30px;
+    font-size: 10.5px;
+  }
 }

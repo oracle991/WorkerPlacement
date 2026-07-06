@@ -2,7 +2,7 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <title>辺境開拓団(仮)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -12,6 +12,12 @@
     <div id="app">
       <div id="game-container"></div>
       <div id="hud"></div>
+      <div id="orientation-lock" role="status" aria-live="polite">
+        <div>
+          <strong>横向きで遊んでください</strong>
+          <span>このゲームは 16:9 の盤面に合わせています。</span>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
