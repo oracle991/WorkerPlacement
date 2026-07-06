@@ -871,6 +871,7 @@ export class GameScene extends Phaser.Scene {
 
         const banner = this.makeBanner(x, y - 134, `${outcomeLabel(result.outcome)}  ${result.total} vs ${result.target}`, style);
         this.effectLayer.add(banner);
+        const overlayBanner = this.makeDomBanner(x, y - 134, `${outcomeLabel(result.outcome)}  ${result.total} vs ${result.target}`, style);
         banner.setScale(0.4);
         this.tweens.add({ targets: banner, scale: 1, duration: 200, ease: 'Back.easeOut' });
 
@@ -890,6 +891,7 @@ export class GameScene extends Phaser.Scene {
         });
 
         this.time.delayedCall(this.skipResolution ? 100 : 1050 + floats.length * 90, () => {
+          overlayBanner.fadeOut();
           this.tweens.add({
             targets: [dice1.container, dice2.container, banner],
             alpha: 0,
@@ -899,6 +901,7 @@ export class GameScene extends Phaser.Scene {
               dice2.container.destroy();
               overlayDice1.destroy();
               overlayDice2.destroy();
+              overlayBanner.destroy();
               this.effectLayer.removeAll(true);
               this.renderHud();
               resolve();
@@ -943,6 +946,27 @@ export class GameScene extends Phaser.Scene {
     };
     face(1);
     return { element, face, pop, destroy };
+  }
+
+  private makeDomBanner(x: number, y: number, label: string, style: { hex: string; num: number }): { element: HTMLElement; fadeOut: () => void; destroy: () => void } {
+    const element = document.createElement('div');
+    element.className = 'overlay-banner';
+    element.textContent = label;
+    const position = this.toViewportPoint(x, y);
+    element.style.left = `${position.x}px`;
+    element.style.top = `${position.y}px`;
+    element.style.color = style.hex;
+    element.style.borderColor = style.hex;
+    element.style.setProperty('--banner-scale', String(position.scale));
+    this.domEffectLayer.appendChild(element);
+
+    const fadeOut = (): void => {
+      element.classList.add('fade-out');
+    };
+    const destroy = (): void => {
+      element.remove();
+    };
+    return { element, fadeOut, destroy };
   }
 
   private toViewportPoint(x: number, y: number): { x: number; y: number; scale: number } {

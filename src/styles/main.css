@@ -94,6 +94,32 @@ button {
   animation: overlay-die-pop 0.22s cubic-bezier(0.2, 1.4, 0.35, 1) both;
 }
 
+.overlay-banner {
+  --banner-scale: 1;
+  position: absolute;
+  min-width: calc(128px * var(--banner-scale));
+  padding:
+    calc(5px * var(--banner-scale))
+    calc(15px * var(--banner-scale));
+  border: 2px solid currentColor;
+  border-radius: calc(10px * var(--banner-scale));
+  background: rgba(20, 16, 10, 0.86);
+  box-shadow: 0 calc(8px * var(--banner-scale)) calc(22px * var(--banner-scale)) rgba(0, 0, 0, 0.42);
+  font-size: calc(24px * var(--banner-scale));
+  font-weight: 900;
+  line-height: 1.25;
+  text-align: center;
+  text-shadow: 0 2px 0 #141009, 0 0 10px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+  transform: translate(-50%, -50%) scale(0.4);
+  transform-origin: center;
+  animation: overlay-banner-pop 0.2s ease-out both;
+}
+
+.overlay-banner.fade-out {
+  animation: overlay-banner-fade 0.2s ease-out both;
+}
+
 @keyframes overlay-die-roll {
   from { transform: translate(-50%, -50%) rotate(-9deg) scale(1); }
   to { transform: translate(-50%, -50%) rotate(9deg) scale(1.04); }
@@ -102,6 +128,16 @@ button {
 @keyframes overlay-die-pop {
   from { transform: translate(-50%, -50%) rotate(0deg) scale(1.25); }
   to { transform: translate(-50%, -50%) rotate(0deg) scale(1); }
+}
+
+@keyframes overlay-banner-pop {
+  from { transform: translate(-50%, -50%) scale(0.4); }
+  to { transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes overlay-banner-fade {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(1); }
 }
 
 #orientation-lock {
