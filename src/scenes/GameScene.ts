@@ -88,6 +88,7 @@ export class GameScene extends Phaser.Scene {
   private spotViews: SpotView[] = [];
   private workerViews: Phaser.GameObjects.Container[] = [];
   private effectLayer!: Phaser.GameObjects.Container;
+  private domEffectLayer!: HTMLElement;
   /** 季節で色替えする地面グラフィック。season 変化時のみ再描画する。 */
   private boardGround!: Phaser.GameObjects.Graphics;
   private paintedSeason = '';
@@ -104,6 +105,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.hud = document.querySelector('#hud') as HTMLElement;
+    this.domEffectLayer = this.ensureDomEffectLayer();
     this.input.keyboard?.on('keydown-SPACE', () => {
       this.skipResolution = true;
     });
@@ -116,6 +118,18 @@ export class GameScene extends Phaser.Scene {
     this.createMuteButton();
     this.drawBoard();
     this.render();
+  }
+
+  private ensureDomEffectLayer(): HTMLElement {
+    const app = document.querySelector('#app');
+    let layer = app?.querySelector<HTMLElement>('#effect-overlay');
+    if (!app) return document.createElement('div');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = 'effect-overlay';
+      app.appendChild(layer);
+    }
+    return layer;
   }
 
   /**
@@ -173,6 +187,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedWorkerId = undefined;
     this.pendingWorkshop = false;
     this.effectLayer.removeAll(true);
+    this.domEffectLayer.replaceChildren();
     this.persist();
     this.render();
   }
@@ -189,6 +204,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedWorkerId = undefined;
     this.pendingWorkshop = false;
     this.effectLayer.removeAll(true);
+    this.domEffectLayer.replaceChildren();
     this.render();
   }
 
@@ -209,6 +225,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedWorkerId = undefined;
     this.pendingWorkshop = false;
     this.effectLayer.removeAll(true);
+    this.domEffectLayer.replaceChildren();
     this.render();
   }
 
@@ -799,6 +816,7 @@ export class GameScene extends Phaser.Scene {
       await this.animateResult(result);
     }
     this.effectLayer.removeAll(true);
+    this.domEffectLayer.replaceChildren();
     this.resolving = false;
     this.persist();
     this.render();
@@ -811,6 +829,8 @@ export class GameScene extends Phaser.Scene {
     return new Promise((resolve) => {
       const dice1 = this.makeDie(x - 26, y - 92);
       const dice2 = this.makeDie(x + 26, y - 92);
+      const overlayDice1 = this.makeDomDie(x - 26, y - 92);
+      const overlayDice2 = this.makeDomDie(x + 26, y - 92);
       audio.playSfx('dice');
       let ticks = 0;
       const roller = this.time.addEvent({
@@ -818,8 +838,12 @@ export class GameScene extends Phaser.Scene {
         repeat: 7,
         callback: () => {
           ticks += 1;
-          dice1.face(Phaser.Math.Between(1, 6));
-          dice2.face(Phaser.Math.Between(1, 6));
+          const value1 = Phaser.Math.Between(1, 6);
+          const value2 = Phaser.Math.Between(1, 6);
+          dice1.face(value1);
+          dice2.face(value2);
+          overlayDice1.face(value1);
+          overlayDice2.face(value2);
         },
       });
 
@@ -828,9 +852,13 @@ export class GameScene extends Phaser.Scene {
         // 確定した目を結果段階の色で描き、着地の弾みを付ける
         dice1.face(result.dice[0], style.face, style.num);
         dice2.face(result.dice[1], style.face, style.num);
+        overlayDice1.face(result.dice[0], style.hex);
+        overlayDice2.face(result.dice[1], style.hex);
         for (const die of [dice1, dice2]) {
           this.tweens.add({ targets: die.container, scale: { from: 1.25, to: 1 }, duration: 220, ease: 'Back.easeOut' });
         }
+        overlayDice1.pop();
+        overlayDice2.pop();
         this.spawnOutcomeBurst(x, y - 92, result.outcome, style.num);
 
         // 結果音: 工房の成功は建設音、それ以外は成否に応じた音
@@ -869,6 +897,8 @@ export class GameScene extends Phaser.Scene {
             onComplete: () => {
               dice1.container.destroy();
               dice2.container.destroy();
+              overlayDice1.destroy();
+              overlayDice2.destroy();
               this.effectLayer.removeAll(true);
               this.renderHud();
               resolve();
@@ -883,6 +913,49 @@ export class GameScene extends Phaser.Scene {
    * 角丸・ピップ表示のダイスを作る。face(value, faceColor?, pipColor?) で目を描き直す。
    * 転がっている間はランダムな目を、確定時は結果段階の色で描画する。
    */
+  private makeDomDie(x: number, y: number): { element: HTMLElement; face: (value: number, accent?: string) => void; pop: () => void; destroy: () => void } {
+    const element = document.createElement('div');
+    element.className = 'overlay-die rolling';
+    const position = this.toViewportPoint(x, y);
+    element.style.left = `${position.x}px`;
+    element.style.top = `${position.y}px`;
+    element.style.setProperty('--die-size', `${Math.max(24, 40 * position.scale)}px`);
+    this.domEffectLayer.appendChild(element);
+
+    const face = (value: number, accent = '#241a12'): void => {
+      element.style.setProperty('--pip-color', accent);
+      element.replaceChildren();
+      for (const [px, py] of PIP_LAYOUT[value] ?? PIP_LAYOUT[1]) {
+        const pip = document.createElement('span');
+        pip.style.left = `${50 + px * 24}%`;
+        pip.style.top = `${50 + py * 24}%`;
+        element.appendChild(pip);
+      }
+    };
+    const pop = (): void => {
+      element.classList.remove('rolling');
+      element.classList.remove('pop');
+      void element.offsetWidth;
+      element.classList.add('pop');
+    };
+    const destroy = (): void => {
+      element.remove();
+    };
+    face(1);
+    return { element, face, pop, destroy };
+  }
+
+  private toViewportPoint(x: number, y: number): { x: number; y: number; scale: number } {
+    const rect = this.game.canvas.getBoundingClientRect();
+    const scaleX = rect.width / 1280;
+    const scaleY = rect.height / 720;
+    return {
+      x: rect.left + x * scaleX,
+      y: rect.top + y * scaleY,
+      scale: Math.min(scaleX, scaleY),
+    };
+  }
+
   private makeDie(x: number, y: number): { container: Phaser.GameObjects.Container; face: (value: number, faceColor?: number, pipColor?: number) => void } {
     const container = this.add.container(x, y).setDepth(60);
     const g = this.add.graphics();
