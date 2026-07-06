@@ -593,6 +593,10 @@ export class GameScene extends Phaser.Scene {
     this.hud.innerHTML = `
       <header class="topbar">
         <div class="pill round">R${this.state.round}<span>/${this.state.maxRounds}</span> ${this.state.preview.seasonLabel}</div>
+        <div class="eventbar">
+          <strong>${this.state.preview.event.name}</strong> ${this.state.preview.event.description}
+          <em>${this.state.preview.seasonNote}</em>
+        </div>
         <div class="resources">
           <span>🍞 ${r.food}</span>
           <span>🪵 ${r.wood}</span>
@@ -601,10 +605,6 @@ export class GameScene extends Phaser.Scene {
           <span class="prosperity">⭐ ${r.prosperity}<small>/${this.state.targetProsperity}</small></span>
         </div>
       </header>
-      <div class="eventbar">
-        <strong>${this.state.preview.event.name}</strong> ${this.state.preview.event.description}
-        <em>${this.state.preview.seasonNote}</em>
-      </div>
       ${builtIcons ? `<div class="built">村の施設: ${builtIcons}</div>` : ''}
       <aside class="panel ${this.state.phase === 'result' ? 'result' : ''}">${this.renderPanel()}</aside>
       <footer class="actions">
